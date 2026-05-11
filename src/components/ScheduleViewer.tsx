@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import {
   SCHEDULE_BY_LANG,
   type ScheduleLang,
 } from "@/config/schedule-assets";
+import {
+  isRestrictedSocialWebView,
+  triggerSameOriginDownload,
+} from "@/lib/inAppBrowser";
 
 /**
  * Single-page schedule viewer: pick BG or EN image, optional download.
@@ -12,18 +16,33 @@ import {
  */
 export function ScheduleViewer() {
   const [lang, setLang] = useState<ScheduleLang>("bg");
+  const [socialHintDismissed, setSocialHintDismissed] = useState(false);
   const active = SCHEDULE_BY_LANG[lang];
 
+  // No subscribe needed — UA does not change during the session; server snapshot is false.
+  const socialWebView = useSyncExternalStore(
+    () => () => {},
+    () => isRestrictedSocialWebView(),
+    () => false,
+  );
+
   /**
-   * Save the same file the user is viewing. Blob download behaves better on
-   * some mobile browsers than a bare `download` link on `img` src alone.
+   * Save the current poster. In Facebook's WebView, use a direct same-origin link
+   * instead of fetch+blob or window.open (those often show "Page can't be loaded").
    */
   const handleDownload = useCallback(async () => {
-    const url = active.src;
+    const path = active.src;
     const name = active.downloadFileName;
+    const absoluteUrl = new URL(path, window.location.origin).href;
+
+    // Read UA here (not only from state) so the first tap works before useEffect runs.
+    if (isRestrictedSocialWebView()) {
+      triggerSameOriginDownload(absoluteUrl, name);
+      return;
+    }
 
     try {
-      const response = await fetch(url);
+      const response = await fetch(path);
       if (!response.ok) throw new Error("fetch failed");
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -31,11 +50,14 @@ export function ScheduleViewer() {
       anchor.href = objectUrl;
       anchor.download = name;
       anchor.rel = "noopener";
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
       anchor.click();
+      document.body.removeChild(anchor);
       URL.revokeObjectURL(objectUrl);
     } catch {
-      // If fetch/blob fails, still open the asset so the user can long-press or use browser save.
-      window.open(url, "_blank", "noopener,noreferrer");
+      // Avoid window.open here — same fallback as in-app: direct anchor (same origin).
+      triggerSameOriginDownload(absoluteUrl, name);
     }
   }, [active.downloadFileName, active.src]);
 
@@ -44,6 +66,43 @@ export function ScheduleViewer() {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden">
       {/* Sticky bar: language + download stay visible while scrolling long posters */}
       <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/90 py-3 shadow-sm backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
+        {socialWebView && !socialHintDismissed ? (
+          <div
+            role="status"
+            className="mx-auto mb-3 flex max-w-full items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 sm:px-7 lg:max-w-[1400px] dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100"
+          >
+            <p className="min-w-0 flex-1 leading-snug">
+              <span className="font-semibold">Facebook / Instagram:</span> вграденият
+              браузър често блокира изтегляне. Ползвайте менюто{" "}
+              <span className="whitespace-nowrap font-mono">⋯</span> или{" "}
+              <span className="whitespace-nowrap font-mono">⋮</span> →{" "}
+              <span className="font-semibold">Отвори в браузър</span> /{" "}
+              <span className="font-semibold">Open in browser</span>, после бутона за
+              изтегляне. Алтернатива:{" "}
+              <button
+                type="button"
+                className="font-semibold text-amber-900 underline decoration-amber-700 underline-offset-2 hover:text-amber-950 dark:text-amber-50 dark:hover:text-white"
+                onClick={() => {
+                  window.location.href = new URL(
+                    active.src,
+                    window.location.origin,
+                  ).href;
+                }}
+              >
+                отвори изображението на цял екран
+              </button>{" "}
+              и задръж за запис / open full-screen image, then long-press to save.
+            </p>
+            <button
+              type="button"
+              onClick={() => setSocialHintDismissed(true)}
+              className="shrink-0 rounded p-1 text-amber-800 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/50"
+              aria-label="Затвори подсказката"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
         <div className="mx-auto flex w-full max-w-full flex-wrap items-center justify-center gap-3 px-4 sm:px-7 lg:max-w-[1400px] sm:justify-between">
           <div
             className="inline-flex rounded-lg border border-zinc-200 bg-zinc-50 p-1 dark:border-zinc-700 dark:bg-zinc-900"
